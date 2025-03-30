@@ -11,6 +11,7 @@ import utils
 from preview import FruitQueue
 import sprites
 from suika_agent import SuikaAgent
+from welcome_screen import WelcomeScreen
 
 
 class Autoplayer(object):
@@ -49,8 +50,8 @@ class Autoplayer(object):
         print(f"autoplayer rate = {self._rate} fruits/sec")
 
     def step(self, dt):
-        # appelé à chaque frame
-        # renvoie le nombre de fruits à lacher sur la frame courante
+        # called each frame
+        # returns the number of fruits to drop on the current frame
         if( not self._enabled or self._rate == 0 ):
             return 0
         t = self._time_debt + dt
@@ -61,7 +62,7 @@ class Autoplayer(object):
 
 class MouseState(object):
     """
-    Utilitaire pour suivre l'état de la souris (position, boutons)
+    Utility to track mouse state (position, buttons)
     """
 
     def __init__(self, window):
@@ -96,13 +97,13 @@ class MouseState(object):
     def on_mouse_press(self, x, y, button, modifiers):
         ret = pg.event.EVENT_UNHANDLED
 
-        if( self._autofire_on ):                     # arrete l'autofire/autoplay lorsqu'il est actif
+        if( self._autofire_on ):                     # stop autofire/autoplay when active
             self._autofire_on = False
             if( self.on_autofire_stop ):
                 self.on_autofire_stop()
-            ret = pg.event.EVENT_HANDLED             # pour eviter de dropper un fruit sur la partie suivante
+            ret = pg.event.EVENT_HANDLED             # to avoid dropping a fruit on the next part
         
-        if( (button & pg.window.mouse.LEFT) ):      # note le moment du début du clic
+        if( (button & pg.window.mouse.LEFT) ):      # note the moment of click start
             self._left_click_start = utils.now()
             self.position = (x, y)
         return ret
@@ -132,14 +133,29 @@ class MouseState(object):
 
 class SuikaWindow(pg.window.Window):
     def __init__(self, width=WINDOW_WIDTH, height=WINDOW_HEIGHT):
-        super().__init__(width=width, height=height, resizable=True, )
-        self._space = pm.Space( )
+        # Initialize all attributes before creating window
+        self._is_gameover = False
+        self._is_paused = False
+        self._autoplay_txt = ""
+        self._is_mouse_shake = False
+        self._is_benchmark_mode = False
+        self._dragged_fruit = None
+        self.game_started = False
+        
+        # Initialize window
+        super().__init__(width=width, height=height, resizable=True)
+        
+        # Create welcome screen
+        self.welcome_screen = WelcomeScreen(width, height, self.start_game)
+        
+        # Initialize game objects
+        self._space = pm.Space()
         self._space.gravity = (0, GRAVITY)
-        self._bocal = Bocal(space=self._space, **utils.bocal_coords( window_w=width, window_h=height) )
+        self._bocal = Bocal(space=self._space, **utils.bocal_coords(window_w=width, window_h=height))
         self._preview = FruitQueue(cnt=PREVIEW_COUNT)
-        self._fruits = ActiveFruits( space=self._space, width=width, height=height )
+        self._fruits = ActiveFruits(space=self._space, width=width, height=height)
         self._countdown = utils.CountDown()
-        self._gui = gui.GUI( window_width=width, window_height=height )
+        self._gui = gui.GUI(window_width=width, window_height=height)
         self._collision_helper = CollisionHelper(self._space)
         self._autoplayer = Autoplayer()
         
@@ -147,24 +163,32 @@ class SuikaWindow(pg.window.Window):
         self.ai_agent = SuikaAgent()
         self.ai_enabled = False
         self.training_mode = False
-        self.fast_training = False
         self.last_state = None
         self.last_action = None
         self.cumulative_reward = 0
         self.episode = 0
         
-        pg.clock.schedule_interval( self.simulation_tick, interval=PYMUNK_INTERVAL )
-        pg.clock.schedule_interval( self.autoplay_tick, interval=AUTOPLAY_INTERVAL_BASE)
-        pg.clock.schedule_interval( self.ai_tick, interval=0.5 )  # AI makes decisions every 0.5 seconds
-        self.display_fps = utils.Speedmeter()        
-        self.pymunk_fps = utils.Speedmeter(bufsize= int(3/PYMUNK_INTERVAL) )  
-
-        self._mouse_state = MouseState( window=self )
+        # Initialize display metrics
+        self.display_fps = utils.Speedmeter()
+        self.pymunk_fps = utils.Speedmeter(bufsize=int(3/PYMUNK_INTERVAL))
+        
+        # Initialize mouse handling
+        self._mouse_state = MouseState(self)
         self._mouse_state.on_autofire_stop = self._autoplayer.disable
-
-        self.set_caption("Pastèque - AI Mode")
-        self.set_minimum_size( width = 2 * BOCAL_MARGIN_SIDE + BOCAL_MIN_WIDTH,
-                               height = BOCAL_MARGIN_TOP + BOCAL_MARGIN_BOTTOM + BOCAL_MIN_HEIGHT )
+        
+        # Schedule updates
+        pg.clock.schedule_interval(self.simulation_tick, interval=PYMUNK_INTERVAL)
+        pg.clock.schedule_interval(self.autoplay_tick, interval=AUTOPLAY_INTERVAL_BASE)
+        pg.clock.schedule_interval(self.ai_tick, interval=0.5)
+        
+        # Set window properties
+        self.set_caption("Suika Game")
+        self.set_minimum_size(
+            width=2 * BOCAL_MARGIN_SIDE + BOCAL_MIN_WIDTH,
+            height=BOCAL_MARGIN_TOP + BOCAL_MARGIN_BOTTOM + BOCAL_MIN_HEIGHT
+        )
+        
+        # Reset game state
         self.reset_game()
 
     def reset_game(self):
@@ -184,6 +208,33 @@ class SuikaWindow(pg.window.Window):
         self._mouse_state.reset()
         self.prepare_next()
 
+    def start_game(self):
+        """Called when user clicks start on welcome screen"""
+        self.game_started = True
+        self.reset_game()
+        print("\n=== Game Started! ===")
+        print("Controls:")
+        print("- Left Click: Drop fruit")
+        print("- Right Click: Shoot fruit")
+        print("- I: Toggle AI mode")
+        print("- T: Toggle training mode")
+        print("- ESC: Quit game\n")
+        
+        # Ensure the game is properly initialized
+        self._space.gravity = (0, GRAVITY)
+        self._bocal.reset()
+        self._preview.reset()
+        self._fruits.reset()
+        self._collision_helper.reset()
+        self._countdown.reset()
+        self._gui.reset()
+        self._autoplayer.reset()
+        self._mouse_state.reset()
+        self.prepare_next()
+        
+        # Clear any existing welcome screen
+        if hasattr(self, 'welcome_screen'):
+            self.welcome_screen = None
 
     def toggle_benchmark_mode( self ):
         pg.clock.unschedule( self.simulation_step )
@@ -205,13 +256,13 @@ class SuikaWindow(pg.window.Window):
                 return
             margin=next.radius + WALL_THICKNESS/2 + 1
 
-            # position de la souris ou random si x = None 
+            # position of the mouse or random if x = None 
             if( cursor_x is None ):
                 pos = self._bocal.drop_point_random( margin=margin )
             else:
                 pos = self._bocal.drop_point_cursor( cursor_x, margin=margin )
 
-            if( not pos ):            # pos==None si clic hors du bocal
+            if( not pos ):            # pos==None if click is outside container
                 return
             self._fruits.drop_next(pos)
             self.prepare_next()
@@ -223,29 +274,29 @@ class SuikaWindow(pg.window.Window):
             return
         msg = []
         nb = self._autoplayer.step(dt)
-        # autofire ( = autoplay contrôlé à la souris )
+        # autofire ( = autoplay controlled by mouse )
         if( self._mouse_state.autofire ):
-            self._autoplayer.enable()   # active l'autoplay
-            pos = self._mouse_state.position    # None si le pointeur est en dehors de la fenetre
+            self._autoplayer.enable()   # active autoplay
+            pos = self._mouse_state.position    # None if pointer is outside window
             if(pos):
                 self.drop(cursor_x=self._mouse_state.position[0], nb=nb) 
                 msg.append(f"AUTOFIRE")
-        # autoplay ( drop sur emplacement random )
+        # autoplay ( drop on random location )
         elif( self._autoplayer._enabled):
             self.drop(nb=nb, cursor_x=None)
             msg.append(f"AUTOPLAY")
 
-        # ajoute le débit de l'autoplay/autofire seulement si actif.
+        # add autoplay/autofire rate only if active.
         if(len(msg)):
             msg.append(f"{self._autoplayer.get_rate()} fruits/sec")
         self._autoplay_txt = ' '.join(msg)
 
 
     def gameover(self):
-        """ Actions en cas de partie perdue
+        """ Actions in case of game over
         """
         print("GAMEOVER")
-        self._is_gameover = True    # inhibe les actions de jeu
+        self._is_gameover = True    # inhibit game actions
         self._autofire_on = False
         self._fruits.gameover()
         self._gui.show_gameover()
@@ -261,7 +312,7 @@ class SuikaWindow(pg.window.Window):
 
 
     def fruit_drag_start(self):
-        # passe le fruit sous la souris en mode DRAG
+        # pass the fruit under the mouse in DRAG_MODE
         cursor = self._mouse_state.position
         self._dragged_fruit = self.find_fruit_at( *cursor )
         if( self._dragged_fruit) :
@@ -279,9 +330,9 @@ class SuikaWindow(pg.window.Window):
         if( len(qi)==0 ):
             return None
         if( len(qi) > 1):
-            print("WARNING: pluiseurs fruits superposés ??")
+            print("WARNING: Multiple overlapping fruits detected")
         if( not hasattr( qi[0].shape, 'fruit' )):
-           return None     # la forme n'est pas un fruit (ex: bocal)
+           return None     # shape is not a fruit (e.g. bocal)
         return qi[0].shape.fruit
 
 
@@ -298,121 +349,131 @@ class SuikaWindow(pg.window.Window):
 
 
     def simulation_tick(self, dt):
-        """Avance d'un pas la simulation physique
-        appelé par un timer de window.on_draw()
+        """Advance one physics step
+        called by window.on_draw()
         """
         self.pymunk_fps.tick_rel(dt)
         if( self._is_paused ):
             return
 
-        # met à jour la position des éléments du bocal
+        # update bocal elements position
         self._bocal.step(dt)
-        # met à jour le fruit en DRAG_MODE
+        # update dragged fruit in DRAG_MODE
         if( self._dragged_fruit ):
             self._dragged_fruit.drag_to( self._mouse_state.position, dt)
-        # prepare le gestionnaire de collisions
+        # prepare collision handler
         self._collision_helper.reset()
-        # execute 1 pas de simulation physique
+        # execute 1 physics step
         self._space.step( PYMUNK_INTERVAL )  
 
-        # modifie les fruits selon les collisions détectées
+        # modify fruits based on detected collisions
         self._collision_helper.process( 
             spawn_func=self.spawn_in_bocal, 
             world_to_bocal_func=self._bocal.to_bocal )
-        # menage 
+        # clean up
         self._fruits.cleanup()
 
 
     def update(self):
-        # gere le countdown en cas de débordement
+        # handle countdown in case of overflow
         if( not self._bocal.is_tumbling):
             ids = self._bocal.fruits_sur_maxline()
             self._countdown.update( ids )
 
-        # met à jour l'affichage et détecte la fin de partie
+        # update display and detect game end
         countdown_val, countdown_txt = self._countdown.status()
         if( countdown_val < 0 and not self._is_gameover ):
             self.gameover()
 
-        # l'ordre des conditions définit la priorité des messages
+        # order of conditions defines message priority
         game_status = ""
         if( True ):               game_status = self._autoplay_txt
         if( countdown_txt ):      game_status = countdown_txt
         if( self._is_paused ):    game_status = "PAUSE"
         if( self._is_gameover ):  game_status = "GAME OVER"
 
-        self._gui.update_dict( {
-            #gui.TOP_LEFT: f"Fruits {len(self._fruits._fruits)}",
-            gui.TOP_LEFT: f"score {self._fruits._score}",
-            gui.TOP_RIGHT: f"FPS {self.pymunk_fps.value:.0f} / {self.display_fps.value:.0f}",
-            gui.TOP_CENTER: game_status } )
+        # Update display with training stats if in training mode
+        if self.training_mode:
+            self._gui.update_dict({
+                gui.TOP_LEFT: f"Score: {self._fruits._score}",
+                gui.TOP_RIGHT: f"FPS {self.pymunk_fps.value:.0f} / {self.display_fps.value:.0f}",
+                gui.TOP_CENTER: f"Epsilon: {self.ai_agent.epsilon:.3f} | Best: {self.ai_agent.best_score} | Ep: {self.episode}"
+            })
+        else:
+            self._gui.update_dict({
+                gui.TOP_LEFT: f"score {self._fruits._score}",
+                gui.TOP_RIGHT: f"FPS {self.pymunk_fps.value:.0f} / {self.display_fps.value:.0f}",
+                gui.TOP_CENTER: game_status
+            })
 
 
     def end_application(self):
-        # TODO : liberer plus proprement toutes les autres ressources
+        # TODO : release resources more cleanly
         self.close()
 
 
     def on_draw(self):
-        # met a jour les positions des fruits et les widgets du GUI
-        self._fruits.update()
-        self._preview.update()
-        self._bocal.update()
-        self.update()
-
-        # met à jour l'affichage
         self.clear()
-        sprites.batch().draw()
-        self.display_fps.tick()
+        if not self.game_started:
+            self.welcome_screen.draw()
+        else:
+            # Update game objects
+            self._fruits.update()
+            self._preview.update()
+            self._bocal.update()
+            self.update()
+
+            # Draw game
+            sprites.batch().draw()
+            self.display_fps.tick()
 
 
     def on_key_press(self, symbol, modifiers):
-        if symbol == pg.window.key.ESCAPE:         # ESC ferme le jeu dans tous les cas
+        if symbol == pg.window.key.ESCAPE:         # ESC closes the game in all cases
             self.end_application()
         elif symbol == pg.window.key.I:            # 'I' for AI
             self.toggle_ai()
-        elif symbol == pg.window.key.L:            # 'L' for training (Learning)
+        elif symbol == pg.window.key.T:            # 'T' for training mode
             self.toggle_training()
-        elif symbol == pg.window.key.F:            # 'F' for fast training
-            self.toggle_fast_training()
         elif not self.ai_enabled:  # Only allow these controls when AI is disabled
             if symbol == pg.window.key.R:          # Reset game
                 self.reset_game()
-            elif symbol == pg.window.key.A:        # A controle l'autoplay
+            elif symbol == pg.window.key.A:        # A controls autoplay
                 self._autoplayer.toggle()
-            elif symbol == pg.window.key.T:        # T for tumble
-                self._countdown.reset()
-                self._bocal.tumble_once()
-            elif symbol == pg.window.key.S:        # S secoue le bocal automatiquement
+            elif symbol == pg.window.key.S:        # S shakes the bocal automatically
                 self._bocal.shake_auto()
-            elif symbol == pg.window.key.SPACE:    # SPACE met en mode MOUSE_SHAKE
+            elif symbol == pg.window.key.SPACE:    # SPACE puts in MOUSE_SHAKE mode
                 self._bocal.shake_mouse()
                 self.push_handlers(self._bocal.on_mouse_motion)
-            elif symbol == pg.window.key.M:        # deplace un fruit à la souris
+            elif symbol == pg.window.key.M:        # move a fruit to the mouse
                 self.fruit_drag_start()
-            elif symbol == pg.window.key.P:        # P met le jeu en pause
+            elif symbol == pg.window.key.P:        # P pauses the game
                 self.toggle_pause()
-            elif symbol == pg.window.key.G:        # G force un gameover en cours de partie
+            elif symbol == pg.window.key.G:        # G forces a gameover in progress
                 self.gameover()
-            elif symbol == pg.window.key.B:        # Mode benchmark
+            elif symbol == pg.window.key.B:        # Benchmark mode
                 self.toggle_benchmark_mode()
 
     def on_key_release(self, symbol, modifiers):
-        if(symbol == pg.window.key.SPACE):          # arrete la secousse manuelle
+        if(symbol == pg.window.key.SPACE):          # stop manual shaking
             self._bocal.shake_stop()
             self.pop_handlers()
-        elif(symbol == pg.window.key.S):            # arrete la secousse automatique
+        elif(symbol == pg.window.key.S):            # stop automatic shaking
             self._bocal.shake_stop()
-        elif(symbol == pg.window.key.M):            # relache le fruit après un deplacement à la souris
+        elif(symbol == pg.window.key.M):            # release the fruit after moving to the mouse
             self.fruit_drag_stop()
 
 
     def on_mouse_press(self, x, y, button, modifiers):
-        if( self._is_gameover ):
+        if not self.game_started:
+            self.welcome_screen.on_button_click(x, y)
+            return
+
+        if self._is_gameover:
             self.reset_game()
-        elif( (button & pg.window.mouse.LEFT) ):
+        elif (button & pg.window.mouse.LEFT):
             self.drop(x)
-        elif( (button & pg.window.mouse.RIGHT) ):
+        elif (button & pg.window.mouse.RIGHT):
             self.shoot_fruit(x, y)
 
 
@@ -422,15 +483,18 @@ class SuikaWindow(pg.window.Window):
 
 
     def on_resize(self, width, height):
-        """ met a jour les dimensions des objets
-        """
-        #print(f'The window was resized to {width}x{height}')
-        self._bocal.on_resize( **utils.bocal_coords( window_w=width, window_h=height ) )
-        self._fruits.on_resize(width, height)
-        self._preview.on_resize(width, height)
-        self._gui.on_resize(width, height)
-
-        # nécessaire pour mettre à jour l'affichage
+        """Handle window resize events"""
+        if hasattr(self, '_bocal'):  # Check if _bocal exists before using it
+            self._bocal.on_resize(**utils.bocal_coords(window_w=width, window_h=height))
+            self._fruits.on_resize(width, height)
+            self._preview.on_resize(width, height)
+            self._gui.on_resize(width, height)
+        
+        # Update welcome screen if it exists
+        if hasattr(self, 'welcome_screen'):
+            self.welcome_screen = WelcomeScreen(width, height, self.start_game)
+            
+        # Update window
         super().on_resize(width, height)
 
     def get_game_state(self):
@@ -440,31 +504,84 @@ class SuikaWindow(pg.window.Window):
     def get_reward(self):
         """Calculate reward based on game state"""
         reward = 0
-        # Reward for score
-        reward += self._fruits._score * 0.1
         
-        # Penalty for fruits above red line
+        # Reward for score (increased weight)
+        reward += self._fruits._score * 0.5
+        
+        # Penalty for fruits above red line (increased penalty)
         fruits_above = len(self._bocal.fruits_sur_maxline())
-        reward -= fruits_above * 5
+        reward -= fruits_above * 10
         
-        # Big penalty for game over
+        # Big penalty for game over (increased penalty)
         if self._is_gameover:
-            reward -= 100
+            reward -= 200
+            
+        # Reward for successful merges (new)
+        if hasattr(self, '_last_score'):
+            score_diff = self._fruits._score - self._last_score
+            if score_diff > 0:
+                reward += score_diff * 2  # Extra reward for successful merges
+        self._last_score = self._fruits._score
             
         return reward
+
+    def toggle_ai(self):
+        """Toggle AI control"""
+        self.ai_enabled = not self.ai_enabled
+        if self.ai_enabled:
+            print("\n=== AI Mode Enabled ===")
+            print("AI will play normally")
+            print("Press T to enable training mode")
+        else:
+            print("\n=== AI Mode Disabled ===")
+            # Disable training mode when AI is disabled
+            if self.training_mode:
+                self.toggle_training()
+
+    def toggle_training(self):
+        """Toggle AI training mode"""
+        if not self.ai_enabled:
+            print("\nEnable AI mode first (press I)!")
+            return
+            
+        self.training_mode = not self.training_mode
+        if self.training_mode:
+            print("\n=== Training Mode Enabled ===")
+            print("AI is now learning and improving")
+            print("Controls:")
+            print("- Press T again to disable training")
+            print("- Press I to disable AI completely")
+            print("\nCurrent Statistics:")
+            print(f"Total Episodes: {self.episode}")
+            print(f"Best Score: {self.ai_agent.best_score}")
+            print(f"Current Exploration Rate: {self.ai_agent.epsilon:.3f}")
+            # Speed up the AI decision interval in training mode
+            pg.clock.unschedule(self.ai_tick)
+            pg.clock.schedule_interval(self.ai_tick, interval=0.1)
+        else:
+            print("\n=== Training Mode Disabled ===")
+            print("AI is now playing normally")
+            # Restore normal AI decision interval
+            pg.clock.unschedule(self.ai_tick)
+            pg.clock.schedule_interval(self.ai_tick, interval=0.5)
 
     def ai_tick(self, dt):
         """AI decision making loop"""
         if not self.ai_enabled or self._is_paused:
             return
 
-        # If game is over, immediately reset and continue in training mode
+        # If game is over, handle based on mode
         if self._is_gameover:
             if self.training_mode:
+                # Update training statistics
                 self.ai_agent.update_training_stats(self.episode, self._fruits._score, self.cumulative_reward)
-            self.episode += 1
-            self.cumulative_reward = 0
-            self.reset_game()
+                self.episode += 1
+                self.cumulative_reward = 0
+                # Reset game for next episode
+                self.reset_game()
+            else:
+                # In normal AI mode, just reset the game
+                self.reset_game()
 
         current_state = self.get_game_state()
         
@@ -473,7 +590,7 @@ class SuikaWindow(pg.window.Window):
             reward = self.get_reward()
             self.cumulative_reward += reward
             
-            # Train the agent
+            # Train the agent only in training mode
             if self.training_mode:
                 self.ai_agent.train(
                     self.last_state,
@@ -492,65 +609,6 @@ class SuikaWindow(pg.window.Window):
         # Save state and action
         self.last_state = current_state
         self.last_action = action
-
-        # In fast training mode, make multiple moves per tick
-        if self.fast_training and self.training_mode:
-            for _ in range(3):  # Make 3 moves per tick in fast mode
-                if not self._is_gameover:
-                    action = self.ai_agent.get_action(self.get_game_state(), self.width)
-                    self.drop(action)
-
-    def toggle_ai(self):
-        """Toggle AI control"""
-        self.ai_enabled = not self.ai_enabled
-        if self.ai_enabled:
-            print("AI Mode Enabled")
-            if self.training_mode:
-                print(f"Current Episode: {self.episode}")
-                print(f"Best Score: {self.ai_agent.best_score}")
-                print(f"Epsilon: {self.ai_agent.epsilon:.3f}")
-        else:
-            print("AI Mode Disabled")
-
-    def toggle_training(self):
-        """Toggle AI training mode"""
-        self.training_mode = not self.training_mode
-        if self.training_mode:
-            print("\nTraining Mode Enabled")
-            print("Controls:")
-            print("- Press F to toggle fast training mode")
-            print("- Press L again to disable training")
-            print("- Press I to disable AI completely")
-            print("\nCurrent Statistics:")
-            print(f"Total Episodes: {self.episode}")
-            print(f"Best Score: {self.ai_agent.best_score}")
-            print(f"Current Epsilon: {self.ai_agent.epsilon:.3f}")
-            
-            # Automatically enable AI mode when training is enabled
-            if not self.ai_enabled:
-                self.toggle_ai()
-        else:
-            print("Training Mode Disabled")
-            self.fast_training = False
-
-    def toggle_fast_training(self):
-        """Toggle fast training mode"""
-        if not self.training_mode:
-            print("Enable training mode first (press L)!")
-            return
-            
-        self.fast_training = not self.fast_training
-        if self.fast_training:
-            print("Fast Training Mode Enabled")
-            print("Training will run continuously until you press F again")
-            # Speed up the AI decision interval in fast training mode
-            pg.clock.unschedule(self.ai_tick)
-            pg.clock.schedule_interval(self.ai_tick, interval=0.01)  # Make it much faster
-        else:
-            print("Fast Training Mode Disabled")
-            # Restore normal AI decision interval
-            pg.clock.unschedule(self.ai_tick)
-            pg.clock.schedule_interval(self.ai_tick, interval=0.5)
 
 def main():
     pg.resource.path = ['assets/']
